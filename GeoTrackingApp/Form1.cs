@@ -34,6 +34,11 @@ namespace GeoTrackingApp
         private List<GeoJsonFeature> currentFeatures;
         private GeoTransform currentTransform;
         private Bitmap currentTiffBitmap;
+        private ToolTip mapToolTip;
+        private Point lastMousePosition;
+        private Panel zoomControlPanel;
+        private bool isDragging = false;
+        private float zoomScale = 1.0f;
 
         private static class AppColors
         {
@@ -86,10 +91,11 @@ namespace GeoTrackingApp
 
         public Form1()
         {
-            InitializeComponent(); 
-            
+            InitializeComponent();
+
             this.Size = new Size(1200, 800);
             this.MinimumSize = new Size(800, 600);
+            this.Text = "Geo Tracking Application";
 
             InitializeCustomComponents();
             LoadConfiguration();
@@ -187,21 +193,73 @@ namespace GeoTrackingApp
             mapPanel = new Panel
             {
                 Dock = DockStyle.Fill,
-                AutoScroll = true,
-                BackColor = Color.White
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            mapToolTip = new ToolTip
+            {
+                AutoPopDelay = 5000,
+                InitialDelay = 500,
+                ReshowDelay = 500,
+                ShowAlways = true
+            };
+
+            Panel pictureContainer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true
             };
 
             mapPictureBox = new PictureBox
             {
-                SizeMode = PictureBoxSizeMode.AutoSize,
+                SizeMode = PictureBoxSizeMode.Normal,
                 Location = new Point(0, 0),
                 BackColor = Color.White
             };
 
-            mapPictureBox.MouseClick += MapPictureBox_MouseClick;
+            zoomControlPanel = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = 50,
+                BackColor = Color.FromArgb(240, 240, 240)
+            };
+
+            Button zoomInButton = new Button
+            {
+                Text = "+",
+                Size = new Size(40, 40),
+                Location = new Point(5, 10),
+                FlatStyle = FlatStyle.Flat
+            };
+            zoomInButton.Click += (s, e) => ZoomMap(1.2f);
+
+            Button zoomOutButton = new Button
+            {
+                Text = "-",
+                Size = new Size(40, 40),
+                Location = new Point(5, 60),
+                FlatStyle = FlatStyle.Flat
+            };
+            zoomOutButton.Click += (s, e) => ZoomMap(0.8f);
+
+            zoomControlPanel.Controls.AddRange(new Control[] { zoomInButton, zoomOutButton });
+
+            mapPictureBox.MouseWheel += MapPictureBox_MouseWheel;
+            mapPictureBox.MouseUp += MapPictureBox_MouseUp;
+            mapPictureBox.MouseDown += MapPictureBox_MouseDown;
             mapPictureBox.MouseMove += MapPictureBox_MouseMove;
-            mapPanel.Controls.Add(mapPictureBox);
+            mapPictureBox.MouseClick += MapPictureBox_MouseClick;
+
+            pictureContainer.Controls.Add(mapPictureBox);
+
+            mapPanel.Controls.Add(pictureContainer);
+            mapPanel.Controls.Add(zoomControlPanel);
+
+            pictureContainer.Dock = DockStyle.Fill;
+            zoomControlPanel.Dock = DockStyle.Right;
         }
+
 
         private void InitializeDataGrid()
         {
@@ -303,6 +361,16 @@ namespace GeoTrackingApp
             btnLoadGeoJson.Visible = true;
             btnHistoricalTracking.Enabled = false;
             btnLiveTracking.Enabled = false;
+
+            MessageBox.Show(
+                "Historical Tracking Mode Activated:\n\n" +
+                "1. First, load a TIFF map file\n" +
+                "2. Then, load a corresponding GeoJSON data file\n" +
+                "3. Points will be plotted on the map",
+                "Historical Tracking",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information
+            );
         }
 
         private void BtnLoadTiff_Click(object sender, EventArgs e)
@@ -323,12 +391,8 @@ namespace GeoTrackingApp
         {
             try
             {
-                if (currentTiffBitmap != null)
-                {
-                    currentTiffBitmap.Dispose();
-                }
+                currentTiffBitmap?.Dispose();
 
-                // First try to load the image directly
                 using (Image originalImage = Image.FromFile(filePath))
                 {
                     currentTiffBitmap = new Bitmap(originalImage);
@@ -338,28 +402,21 @@ namespace GeoTrackingApp
                 {
                     if (tiff == null)
                     {
-                        MessageBox.Show("Failed to open TIFF file.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
+                        throw new Exception("Could not open TIFF file using LibTiff");
                     }
 
-                    // Get georeference information
                     FieldValue[] modelPixelScaleTag = tiff.GetField((TiffTag)33550);
                     FieldValue[] modelTiepointTag = tiff.GetField((TiffTag)33922);
 
-                    if (modelPixelScaleTag != null && modelTiepointTag != null)
-                    {
-                        double[] modelPixelScale = modelPixelScaleTag[1].ToDoubleArray();
-                        double[] modelTiepoint = modelTiepointTag[1].ToDoubleArray();
-                        currentTransform = new GeoTransform(modelTiepoint, modelPixelScale);
-                    }
-                    else
-                    {
-                        // Use default transform if no georeferencing is available
-                        currentTransform = new GeoTransform(
+                    currentTransform = (modelPixelScaleTag != null && modelTiepointTag != null)
+                        ? new GeoTransform(
+                            modelTiepointTag[1].ToDoubleArray(),
+                            modelPixelScaleTag[1].ToDoubleArray()
+                        )
+                        : new GeoTransform(
                             new double[] { 0, 0, 0, -27.664135, 31.994103, 0 },
                             new double[] { 0.001, 0.001, 0 }
                         );
-                    }
                 }
 
                 mapPictureBox.Image = currentTiffBitmap;
@@ -374,7 +431,12 @@ namespace GeoTrackingApp
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading TIFF file: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(
+                    $"Error loading TIFF file:\n{ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
         }
 
@@ -401,11 +463,36 @@ namespace GeoTrackingApp
 
                 if (geoJsonData?.features == null || !geoJsonData.features.Any())
                 {
-                    MessageBox.Show("Invalid or empty GeoJSON file", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(
+                        "The GeoJSON file is empty or invalid.\n" +
+                        "Please ensure the file contains valid geographic features.",
+                        "Invalid GeoJSON",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
                     return;
                 }
 
-                currentFeatures = geoJsonData.features;
+                var invalidFeatures = geoJsonData.features
+                    .Where(f => f?.geometry?.coordinates == null ||
+                                f.geometry.coordinates.Length != 2)
+                    .ToList();
+
+                if (invalidFeatures.Any())
+                {
+                    MessageBox.Show(
+                        $"{invalidFeatures.Count} features have invalid coordinates and will be skipped.",
+                        "Coordinate Warning",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+                }
+
+                currentFeatures = geoJsonData.features
+                    .Where(f => f?.geometry?.coordinates != null &&
+                                f.geometry.coordinates.Length == 2)
+                    .ToList();
+
                 UpdateDataGridView();
 
                 if (currentTiffBitmap != null)
@@ -413,21 +500,44 @@ namespace GeoTrackingApp
                     DrawGeoJsonPoints();
                 }
 
-                MessageBox.Show("GeoJSON data loaded successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(
+                    $"GeoJSON data loaded successfully.\n" +
+                    $"Total valid features: {currentFeatures.Count}",
+                    "Success",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+            }
+            catch (JsonException jex)
+            {
+                MessageBox.Show(
+                    $"JSON Parsing Error:\n{jex.Message}\n\n" +
+                    "Please check the GeoJSON file format.",
+                    "JSON Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading GeoJSON file: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(
+                    $"Error loading GeoJSON file:\n{ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
         }
 
         private void DrawGeoJsonPoints()
         {
-            if (mapPictureBox.Image == null || currentFeatures == null || currentTransform == null)
+            if (mapPictureBox.Image == null || currentFeatures == null)
+            {
+                MessageBox.Show("No image or features to map.", "Mapping Error");
                 return;
+            }
 
-            // Create a copy of the current TIFF image
-            Bitmap drawingBitmap = new Bitmap(currentTiffBitmap);
+            Bitmap drawingBitmap = new Bitmap(mapPictureBox.Image);
 
             using (Graphics g = Graphics.FromImage(drawingBitmap))
             {
@@ -435,28 +545,43 @@ namespace GeoTrackingApp
 
                 foreach (var feature in currentFeatures)
                 {
-                    var coordinates = feature.geometry.coordinates;
-                    var pixelPoint = currentTransform.WorldToPixel(
-                        new PointLatLng(coordinates[1], coordinates[0])
-                    );
-
-                    // Draw point
-                    using (SolidBrush pointBrush = new SolidBrush(Color.FromArgb(200, Color.Red)))
+                    try
                     {
-                        g.FillEllipse(pointBrush, pixelPoint.X - 5, pixelPoint.Y - 5, 10, 10);
+                        double longitude = feature.geometry.coordinates[0];
+                        double latitude = feature.geometry.coordinates[1];
+
+                        int pixelX = (int)((longitude - 31.99) / 0.01 * drawingBitmap.Width);
+                        int pixelY = (int)((latitude - (-27.67)) / 0.01 * drawingBitmap.Height);
+
+                        pixelX = (int)(pixelX * zoomScale);
+                        pixelY = (int)(pixelY * zoomScale);
+
+                        if (pixelX >= 0 && pixelX < drawingBitmap.Width &&
+                            pixelY >= 0 && pixelY < drawingBitmap.Height)
+                        {
+                            int pointSize = (int)(10 * zoomScale);
+                            g.FillEllipse(Brushes.Red,
+                                pixelX - pointSize / 2,
+                                pixelY - pointSize / 2,
+                                pointSize,
+                                pointSize);
+
+                            float bearing = (float)feature.properties.TNBearing;
+                            float angleRad = (90 - bearing) * (float)Math.PI / 180f;
+                            float arrowLength = 20 * zoomScale;
+
+                            float endX = pixelX + arrowLength * (float)Math.Cos(angleRad);
+                            float endY = pixelY - arrowLength * (float)Math.Sin(angleRad);
+
+                            using (Pen arrowPen = new Pen(Brushes.Yellow, 2 * zoomScale))
+                            {
+                                g.DrawLine(arrowPen, pixelX, pixelY, endX, endY);
+                            }
+                        }
                     }
-
-                    // Draw direction arrow
-                    float bearing = (float)feature.properties.TNBearing;
-                    float angleRad = (90 - bearing) * (float)Math.PI / 180f;
-                    float arrowLength = 20;
-
-                    float endX = pixelPoint.X + arrowLength * (float)Math.Cos(angleRad);
-                    float endY = pixelPoint.Y - arrowLength * (float)Math.Sin(angleRad);
-
-                    using (Pen arrowPen = new Pen(Color.FromArgb(200, Color.Yellow), 2))
+                    catch (Exception ex)
                     {
-                        g.DrawLine(arrowPen, pixelPoint.X, pixelPoint.Y, endX, endY);
+                        Console.WriteLine($"Error mapping point: {ex.Message}");
                     }
                 }
             }
@@ -483,58 +608,194 @@ namespace GeoTrackingApp
 
         private void MapPictureBox_MouseClick(object sender, MouseEventArgs e)
         {
-            if (currentFeatures == null || currentTransform == null)
-                return;
+            if (currentFeatures == null || e.Button != MouseButtons.Left) return;
 
-            Point clickPoint = e.Location;
             foreach (var feature in currentFeatures)
             {
-                var coordinates = feature.geometry.coordinates;
-                var pixelPoint = currentTransform.WorldToPixel(
-                    new PointLatLng(coordinates[1], coordinates[0])
-                );
-
-                if (Math.Abs(clickPoint.X - pixelPoint.X) < 10 && Math.Abs(clickPoint.Y - pixelPoint.Y) < 10)
+                try
                 {
-                    ShowFeatureDetails(feature);
-                    break;
+                    // GeoJSON coordinates are [longitude, latitude]
+                    double longitude = feature.geometry.coordinates[0];
+                    double latitude = feature.geometry.coordinates[1];
+
+                    // Calculate pixel coordinates
+                    int pixelX = (int)((longitude - 31.99) / 0.01 * mapPictureBox.Image.Width);
+                    int pixelY = (int)((latitude - (-27.67)) / 0.01 * mapPictureBox.Image.Height);
+
+                    // Scale point based on zoom
+                    pixelX = (int)(pixelX * zoomScale);
+                    pixelY = (int)(pixelY * zoomScale);
+
+                    // Check if click is near the point
+                    if (Math.Abs(e.X - pixelX) < 10 && Math.Abs(e.Y - pixelY) < 10)
+                    {
+                        ShowFeatureDetails(feature);
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error in point click: {ex.Message}");
                 }
             }
+        }
+        private string FormatFeatureTooltip(GeoJsonFeature feature)
+        {
+            return $"Signal Strength: {feature.properties.SignalStrength:F2}\n" +
+                   $"Altitude: {feature.properties.Altitude:F1} m\n" +
+                   $"Frequency: {feature.properties.Frequency:F4} MHz\n" +
+                   $"Date & Time: {feature.properties.DateTime}\n" +
+                   $"TN Bearing: {feature.properties.TNBearing:F2}°";
         }
 
         private void ShowFeatureDetails(GeoJsonFeature feature)
         {
-            string details = $"Location: {feature.geometry.coordinates[1]}, {feature.geometry.coordinates[0]}\n" +
-                           $"Signal Strength: {feature.properties.SignalStrength}\n" +
-                           $"Altitude: {feature.properties.Altitude}\n" +
+            string details = $"Location: {feature.geometry.coordinates[1]:F6}, {feature.geometry.coordinates[0]:F6}\n\n" +
+                           $"Signal Strength: {feature.properties.SignalStrength:F2}\n" +
+                           $"Altitude: {feature.properties.Altitude:F1} m\n" +
                            $"Date & Time: {feature.properties.DateTime}\n" +
-                           $"Frequency: {feature.properties.Frequency}\n" +
-                           $"TN Bearing: {feature.properties.TNBearing}°";
+                           $"Frequency: {feature.properties.Frequency:F4} MHz\n" +
+                           $"TN Bearing: {feature.properties.TNBearing:F2}°";
 
-            MessageBox.Show(details, "Point Details", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            using (Form detailForm = new Form())
+            {
+                detailForm.Text = "Point Details";
+                detailForm.Size = new Size(400, 300);
+                detailForm.StartPosition = FormStartPosition.CenterParent;
+
+                RichTextBox detailsTextBox = new RichTextBox
+                {
+                    Dock = DockStyle.Fill,
+                    Text = details,
+                    ReadOnly = true,
+                    Font = new Font("Consolas", 10),
+                    BackColor = Color.White
+                };
+
+                detailForm.Controls.Add(detailsTextBox);
+                detailForm.ShowDialog();
+            }
+        }
+
+        private void ZoomMap(float zoomFactor)
+        {
+            if (currentTiffBitmap == null) return;
+
+            zoomScale *= zoomFactor;
+            zoomScale = Math.Max(0.1f, Math.Min(zoomScale, 5.0f));
+
+            int newWidth = (int)(currentTiffBitmap.Width * zoomScale);
+            int newHeight = (int)(currentTiffBitmap.Height * zoomScale);
+
+            Bitmap zoomedBitmap = new Bitmap(newWidth, newHeight);
+            using (Graphics g = Graphics.FromImage(zoomedBitmap))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.CompositingQuality = CompositingQuality.HighQuality;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+
+                g.DrawImage(currentTiffBitmap, 0, 0, newWidth, newHeight);
+            }
+
+            mapPictureBox.Image = zoomedBitmap;
+            mapPictureBox.Size = new Size(newWidth, newHeight);
+
+            if (currentFeatures != null)
+            {
+                DrawGeoJsonPoints();
+            }
+        }
+
+
+        private void MapPictureBox_MouseWheel(object sender, MouseEventArgs e)
+        {
+            float zoomFactor = e.Delta > 0 ? 1.1f : 0.9f;
+            ZoomMap(zoomFactor);
+        }
+
+        private void MapPictureBox_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                isDragging = false;
+                Cursor.Current = Cursors.Default;
+            }
+        }
+
+        private void MapPictureBox_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                isDragging = true;
+                lastMousePosition = e.Location;
+                Cursor.Current = Cursors.SizeAll;
+            }
         }
 
         private void MapPictureBox_MouseMove(object sender, MouseEventArgs e)
         {
-            if (currentFeatures == null || currentTransform == null)
-                return;
+            if (isDragging)
+            {
+                int deltaX = e.X - lastMousePosition.X;
+                int deltaY = e.Y - lastMousePosition.Y;
 
-            Point mousePoint = e.Location;
+                mapPictureBox.Left += deltaX;
+                mapPictureBox.Top += deltaY;
+
+                lastMousePosition = e.Location;
+            }
+
+            if (currentFeatures == null) return;
+
+            // Track if a point was hovered
+            bool pointHovered = false;
+
             foreach (var feature in currentFeatures)
             {
-                var coordinates = feature.geometry.coordinates;
-                var pixelPoint = currentTransform.WorldToPixel(
-                    new PointLatLng(coordinates[1], coordinates[0])
-                );
-
-                if (Math.Abs(mousePoint.X - pixelPoint.X) < 10 && Math.Abs(mousePoint.Y - pixelPoint.Y) < 10)
+                try
                 {
-                    mapPictureBox.Cursor = Cursors.Hand;
-                    return;
+                    // GeoJSON coordinates are [longitude, latitude]
+                    double longitude = feature.geometry.coordinates[0];
+                    double latitude = feature.geometry.coordinates[1];
+
+                    // Calculate pixel coordinates
+                    int pixelX = (int)((longitude - 31.99) / 0.01 * mapPictureBox.Image.Width);
+                    int pixelY = (int)((latitude - (-27.67)) / 0.01 * mapPictureBox.Image.Height);
+
+                    // Scale point based on zoom
+                    pixelX = (int)(pixelX * zoomScale);
+                    pixelY = (int)(pixelY * zoomScale);
+
+                    // Check if mouse is near the point
+                    if (Math.Abs(e.X - pixelX) < 10 && Math.Abs(e.Y - pixelY) < 10)
+                    {
+                        // Format tooltip text
+                        string tooltipText = FormatFeatureTooltip(feature);
+                
+                        // Show tooltip
+                        mapToolTip.SetToolTip(mapPictureBox, tooltipText);
+                
+                        // Change cursor
+                        mapPictureBox.Cursor = Cursors.Hand;
+                
+                        pointHovered = true;
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error in mouse hover: {ex.Message}");
                 }
             }
-            mapPictureBox.Cursor = Cursors.Default;
+
+            // Reset cursor if no point is hovered
+            if (!pointHovered)
+            {
+                mapPictureBox.Cursor = isDragging ? Cursors.SizeAll : Cursors.Default;
+                mapToolTip.SetToolTip(mapPictureBox, null);
+            }
         }
+
 
         private void ChangeDirectory_Click(object sender, EventArgs e)
         {

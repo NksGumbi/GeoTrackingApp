@@ -6,35 +6,57 @@ namespace GeoTrackingApp
 {
     public class GeoTransform
     {
-        private double[] coefficients;
+        private readonly double[] geoTransform;
 
-        public GeoTransform(double[] modelTiepoint, double[] modelPixelScale)
+        public GeoTransform(double[] tiepoint, double[] pixelScale)
         {
-            coefficients = new double[6];
-            coefficients[0] = modelTiepoint[3]; 
-            coefficients[1] = modelPixelScale[0]; 
-            coefficients[2] = 0; 
-            coefficients[3] = modelTiepoint[4];
-            coefficients[4] = 0;
-            coefficients[5] = -modelPixelScale[1];
+            // Standard GDAL-style geotransform
+            geoTransform = new double[6];
+
+            // Origin (top-left corner)
+            geoTransform[0] = tiepoint[3];  // X origin
+            geoTransform[3] = tiepoint[4];  // Y origin
+
+            // Pixel size and rotation
+            geoTransform[1] = pixelScale[0];  // X pixel size
+            geoTransform[5] = -pixelScale[1]; // Y pixel size (negative for top-down images)
+
+            // No rotation in this simple transform
+            geoTransform[2] = 0;
+            geoTransform[4] = 0;
         }
 
-        public PointLatLng PixelToWorld(Point pixel)
+        public PointLatLng PixelToWorld(Point pixelCoord)
         {
-            double x = coefficients[0] + pixel.X * coefficients[1] + pixel.Y * coefficients[2];
-            double y = coefficients[3] + pixel.X * coefficients[4] + pixel.Y * coefficients[5];
-            return new PointLatLng(y, x);
+            double worldX = geoTransform[0] + (pixelCoord.X * geoTransform[1]) + (pixelCoord.Y * geoTransform[2]);
+            double worldY = geoTransform[3] + (pixelCoord.X * geoTransform[4]) + (pixelCoord.Y * geoTransform[5]);
+
+            return new PointLatLng(worldY, worldX);
         }
 
-        public Point WorldToPixel(PointLatLng world)
+        public Point WorldToPixel(PointLatLng worldCoord)
         {
-            double deltaX = world.Lng - coefficients[0];
-            double deltaY = world.Lat - coefficients[3];
+            // Invert the geotransform
+            double det = geoTransform[1] * geoTransform[5] - geoTransform[2] * geoTransform[4];
+            if (Math.Abs(det) < 1e-10)
+            {
+                throw new InvalidOperationException("Invalid geotransform");
+            }
 
-            int x = (int)Math.Round(deltaX / coefficients[1]);
-            int y = (int)Math.Round(deltaY / coefficients[5]);
+            double invDet = 1.0 / det;
 
-            return new Point(x, y);
+            double deltaX = worldCoord.Lng - geoTransform[0];
+            double deltaY = worldCoord.Lat - geoTransform[3];
+
+            int pixelX = (int)(
+                ((deltaX * geoTransform[5] - deltaY * geoTransform[2]) * invDet)
+            );
+
+            int pixelY = (int)(
+                ((deltaY * geoTransform[1] - deltaX * geoTransform[4]) * invDet)
+            );
+
+            return new Point(pixelX, pixelY);
         }
     }
 }
