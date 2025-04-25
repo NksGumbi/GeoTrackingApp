@@ -260,7 +260,6 @@ namespace GeoTrackingApp
             zoomControlPanel.Dock = DockStyle.Right;
         }
 
-
         private void InitializeDataGrid()
         {
             dataGridView = new DataGridView
@@ -614,19 +613,15 @@ namespace GeoTrackingApp
             {
                 try
                 {
-                    // GeoJSON coordinates are [longitude, latitude]
                     double longitude = feature.geometry.coordinates[0];
                     double latitude = feature.geometry.coordinates[1];
 
-                    // Calculate pixel coordinates
                     int pixelX = (int)((longitude - 31.99) / 0.01 * mapPictureBox.Image.Width);
                     int pixelY = (int)((latitude - (-27.67)) / 0.01 * mapPictureBox.Image.Height);
 
-                    // Scale point based on zoom
                     pixelX = (int)(pixelX * zoomScale);
                     pixelY = (int)(pixelY * zoomScale);
 
-                    // Check if click is near the point
                     if (Math.Abs(e.X - pixelX) < 10 && Math.Abs(e.Y - pixelY) < 10)
                     {
                         ShowFeatureDetails(feature);
@@ -706,7 +701,6 @@ namespace GeoTrackingApp
             }
         }
 
-
         private void MapPictureBox_MouseWheel(object sender, MouseEventArgs e)
         {
             float zoomFactor = e.Delta > 0 ? 1.1f : 0.9f;
@@ -747,35 +741,27 @@ namespace GeoTrackingApp
 
             if (currentFeatures == null) return;
 
-            // Track if a point was hovered
             bool pointHovered = false;
 
             foreach (var feature in currentFeatures)
             {
                 try
                 {
-                    // GeoJSON coordinates are [longitude, latitude]
                     double longitude = feature.geometry.coordinates[0];
                     double latitude = feature.geometry.coordinates[1];
 
-                    // Calculate pixel coordinates
                     int pixelX = (int)((longitude - 31.99) / 0.01 * mapPictureBox.Image.Width);
                     int pixelY = (int)((latitude - (-27.67)) / 0.01 * mapPictureBox.Image.Height);
 
-                    // Scale point based on zoom
                     pixelX = (int)(pixelX * zoomScale);
                     pixelY = (int)(pixelY * zoomScale);
 
-                    // Check if mouse is near the point
                     if (Math.Abs(e.X - pixelX) < 10 && Math.Abs(e.Y - pixelY) < 10)
                     {
-                        // Format tooltip text
                         string tooltipText = FormatFeatureTooltip(feature);
                 
-                        // Show tooltip
                         mapToolTip.SetToolTip(mapPictureBox, tooltipText);
                 
-                        // Change cursor
                         mapPictureBox.Cursor = Cursors.Hand;
                 
                         pointHovered = true;
@@ -788,7 +774,6 @@ namespace GeoTrackingApp
                 }
             }
 
-            // Reset cursor if no point is hovered
             if (!pointHovered)
             {
                 mapPictureBox.Cursor = isDragging ? Cursors.SizeAll : Cursors.Default;
